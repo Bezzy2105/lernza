@@ -82,8 +82,6 @@ pub enum Error {
 }
 
 // TTL constants and address validation moved to common.
-pub const MAX_QUEST_NAME_LEN: u32 = 64;
-pub const MAX_QUEST_DESCRIPTION_LEN: u32 = 2000;
 const MAX_TAGS: u32 = 5;
 const MAX_TAG_LEN: u32 = 32;
 
@@ -112,7 +110,7 @@ fn validate_name(name: &String) -> Result<(), Error> {
     if is_blank_ascii(name) {
         return Err(Error::InvalidInput);
     }
-    if name.len() > MAX_QUEST_NAME_LEN {
+    if name.len() > common::MAX_QUEST_NAME_LEN {
         return Err(Error::NameTooLong);
     }
     Ok(())
@@ -123,7 +121,7 @@ fn validate_description(description: &String) -> Result<(), Error> {
     if is_blank_ascii(description) {
         return Err(Error::InvalidInput);
     }
-    if description.len() > MAX_QUEST_DESCRIPTION_LEN {
+    if description.len() > common::MAX_QUEST_DESCRIPTION_LEN {
         return Err(Error::DescriptionTooLong);
     }
     Ok(())
@@ -332,10 +330,8 @@ impl QuestContract {
         // Emit quest creation event
         // Event topics: (quest_created,)
         // Event data: (quest_id, owner, name)
-        env.events().publish(
-            (Symbol::new(&env, "quest_created"),),
-            (id, quest.owner.clone(), quest.name.clone()),
-        );
+        // Emit quest creation event via shared helper for consistent schema
+        common::emit_quest_created(&env, id, &quest.owner.clone(), &quest.name.clone());
 
         Self::bump(&env, id);
         Ok(id)
