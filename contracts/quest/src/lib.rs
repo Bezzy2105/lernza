@@ -1,7 +1,7 @@
 #![no_std]
 use common::{
-    extend_instance_ttl, is_contract_address, QuestInfo, QuestStatus, QuestVersion, Visibility,
-    EnrolleeStatus, Enrollee, BUMP, THRESHOLD,
+    extend_instance_ttl, is_contract_address, Enrollee, EnrolleeStatus, QuestInfo, QuestStatus,
+    QuestVersion, Visibility, BUMP, THRESHOLD,
 };
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, Address, Bytes, BytesN, Env, String,
@@ -1057,7 +1057,7 @@ impl QuestContract {
         let mut active = Vec::new(&env);
 
         for enrollee in enrollees.iter() {
-            let status_key = DataKey::EnrolleeStatus(quest_id, enrollee);
+            let status_key = DataKey::EnrolleeStatus(quest_id, enrollee.clone());
             let status: EnrolleeStatus = env
                 .storage()
                 .persistent()
@@ -1072,8 +1072,39 @@ impl QuestContract {
         Ok(active)
     }
 
+    /// Get the count of active participants in a quest.
+    /// Returns the number of enrollees with Active status (the default).
+    /// More efficient than `get_active_participants().len()` when only the
+    /// count is needed (e.g. analytics dashboards, badge displays).
+    pub fn get_active_participant_count(env: Env, quest_id: u32) -> Result<u32, Error> {
+        Self::load_quest(&env, quest_id)?;
+        let enrollees = Self::load_enrollees(&env, quest_id);
+        let mut count = 0u32;
+
+        for enrollee in enrollees.iter() {
+            let status_key = DataKey::EnrolleeStatus(quest_id, enrollee.clone());
+            let status: EnrolleeStatus = env
+                .storage()
+                .persistent()
+                .get(&status_key)
+                .unwrap_or(EnrolleeStatus::Active);
+
+            if status == EnrolleeStatus::Active {
+                count += 1;
+            }
+        }
+
+        Self::bump(&env, quest_id);
+        Ok(count)
+    }
+
     /// Set the status of an enrollee. Owner only.
-    pub fn set_enrollee_status(env: Env, quest_id: u32, enrollee: Address, status: EnrolleeStatus) -> Result<(), Error> {
+    pub fn set_enrollee_status(
+        env: Env,
+        quest_id: u32,
+        enrollee: Address,
+        status: EnrolleeStatus,
+    ) -> Result<(), Error> {
         Self::require_not_paused(&env)?;
         let quest = Self::load_quest(&env, quest_id)?;
         quest.owner.require_auth();
@@ -1090,7 +1121,11 @@ impl QuestContract {
     }
 
     /// Get the status of an enrollee. Defaults to Active if not set.
-    pub fn get_enrollee_status(env: Env, quest_id: u32, enrollee: Address) -> Result<EnrolleeStatus, Error> {
+    pub fn get_enrollee_status(
+        env: Env,
+        quest_id: u32,
+        enrollee: Address,
+    ) -> Result<EnrolleeStatus, Error> {
         Self::load_quest(&env, quest_id)?;
         let status_key = DataKey::EnrolleeStatus(quest_id, enrollee);
         let status: EnrolleeStatus = env
@@ -1304,7 +1339,11 @@ impl QuestContract {
 
     /// Set prerequisites for a quest. Owner only.
     /// Pass an empty vector to remove all prerequisites.
-    pub fn set_prerequisites(env: Env, quest_id: u32, prerequisite_ids: Vec<u32>) -> Result<(), Error> {
+    pub fn set_prerequisites(
+        env: Env,
+        quest_id: u32,
+        prerequisite_ids: Vec<u32>,
+    ) -> Result<(), Error> {
         Self::require_not_paused(&env)?;
         let mut quest = Self::load_quest(&env, quest_id)?;
         quest.owner.require_auth();
@@ -1325,7 +1364,11 @@ impl QuestContract {
     }
 
     /// Check if a user has completed all prerequisites for a quest.
-    pub fn has_completed_prerequisites(env: Env, user: Address, quest_id: u32) -> Result<bool, Error> {
+    pub fn has_completed_prerequisites(
+        env: Env,
+        user: Address,
+        quest_id: u32,
+    ) -> Result<bool, Error> {
         let quest = Self::load_quest(&env, quest_id)?;
 
         if quest.prerequisite_quest_ids.len() == 0 {
