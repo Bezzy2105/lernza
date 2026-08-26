@@ -432,6 +432,10 @@ impl QuestContract {
         env.storage()
             .persistent()
             .set(&DataKey::Enrollees(id), &Vec::<Address>::new(&env));
+        env.storage().persistent().set(
+            &DataKey::QuestVersionHistory(id),
+            &Vec::<QuestVersion>::new(&env),
+        );
         env.storage().instance().set(&DataKey::NextId, &(id + 1));
         extend_instance_ttl(&env);
 
