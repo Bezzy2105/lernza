@@ -88,6 +88,13 @@ See [docs/deploy-testnet.md](docs/deploy-testnet.md) for full deployment details
 - Consider gas and resource costs for on-chain state mutations — see [docs/GAS_COSTS.md](docs/GAS_COSTS.md)
 - Browser storage usage must follow [docs/DATA_RETENTION_POLICY.md](docs/DATA_RETENTION_POLICY.md) — no private keys or PII in localStorage
 
+### Architecture Decision Records (ADRs)
+
+All core protocol choices, contract boundaries, storage strategies, and authorization rules are documented as ADRs. 
+- Browse existing decisions in the [ADR Index](docs/adr/README.md).
+- Any pull request proposing material architectural changes **must** reference an existing ADR or include a new ADR using [docs/adr/template.md](docs/adr/template.md).
+
+
 ## Frontend (React/TypeScript)
 
 ```bash
