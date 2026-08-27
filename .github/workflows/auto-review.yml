@@ -21,7 +21,7 @@ jobs:
     if: github.event.pull_request.state == 'open' && github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@v4
 
       - name: Gather PR context
         id: ctx
@@ -81,6 +81,10 @@ jobs:
           GH_TOKEN: ${{ secrets.OWNER_PAT }}
           PR_NUM: ${{ github.event.pull_request.number }}
         run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "Skipping comment due to missing token"
+            exit 0
+          fi
           gh pr comment "$PR_NUM" --body "Hey! I don't see any code changes in this PR yet. If you still need to push your commits, go ahead and they'll show up here automatically. I'll take another look once they land."
 
       - name: AI review (Groq gpt-oss-120b)
@@ -222,6 +226,11 @@ jobs:
           DECISION: ${{ steps.review.outputs.decision }}
           BODY: ${{ steps.review.outputs.body }}
         run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "Skipping approval/comment due to missing token"
+            exit 0
+          fi
+
           PAT_USER=$(gh api user --jq '.login' 2>/dev/null || echo "")
           IS_SELF="false"
           [ "$PR_AUTHOR" = "$PAT_USER" ] && IS_SELF="true"
