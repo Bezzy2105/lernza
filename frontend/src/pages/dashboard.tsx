@@ -748,10 +748,18 @@ export function Dashboard(
                     poolBalance: 0,
                   }
                   const totalMilestones = stats.milestoneCount
-                  const completedCount = questCompletions[ws.id] || 0
+                  // Treat missing/null completion as unknown — never coerce to 0% which
+                  // looks like "started but empty". See #1331.
+                  const completedCount = questCompletions[ws.id]
+                  const hasCompletion =
+                    typeof completedCount === "number" && Number.isFinite(completedCount)
+                  const startedCount = hasCompletion ? completedCount : 0
+                  const notStarted = !hasCompletion || startedCount === 0
                   const totalReward = stats.poolBalance
                   const earnedReward =
-                    totalMilestones > 0 ? (totalReward * completedCount) / totalMilestones : 0
+                    totalMilestones > 0 && hasCompletion
+                      ? (totalReward * startedCount) / totalMilestones
+                      : 0
                   const isOwned = !!address && ws.owner === address
 
                   return (
@@ -771,7 +779,9 @@ export function Dashboard(
                                 <CardTitle className="group-hover:text-accent text-base transition-colors">
                                   {ws.name}
                                 </CardTitle>
-                                {completedCount === totalMilestones && totalMilestones > 0 && (
+                                {hasCompletion &&
+                                  startedCount === totalMilestones &&
+                                  totalMilestones > 0 && (
                                   <Badge variant="success" className="gap-1">
                                     <Sparkles className="h-3 w-3" />
                                     Complete
@@ -823,16 +833,25 @@ export function Dashboard(
 
                           {totalMilestones > 0 && (
                             <div className="space-y-2">
-                              <div className="flex items-center gap-3">
-                                <Progress
-                                  value={completedCount}
-                                  max={totalMilestones}
-                                  className="flex-1"
-                                />
-                                <span className="text-muted-foreground text-xs font-bold whitespace-nowrap">
-                                  {completedCount}/{totalMilestones}
-                                </span>
-                              </div>
+                              {notStarted ? (
+                                <p
+                                  className="text-muted-foreground text-xs font-bold"
+                                  data-testid="quest-progress-not-started"
+                                >
+                                  Not started
+                                </p>
+                              ) : (
+                                <div className="flex items-center gap-3">
+                                  <Progress
+                                    value={startedCount}
+                                    max={totalMilestones}
+                                    className="flex-1"
+                                  />
+                                  <span className="text-muted-foreground text-xs font-bold whitespace-nowrap">
+                                    {startedCount}/{totalMilestones}
+                                  </span>
+                                </div>
+                              )}
                               {earnedReward > 0 && (
                                 <div className="flex items-center justify-between">
                                   <span className="text-muted-foreground text-xs font-bold">
