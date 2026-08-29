@@ -1961,8 +1961,21 @@ impl QuestContract {
 
     fn bump(env: &Env, quest_id: u32) {
         extend_instance_ttl(env);
-        if env.storage().persistent().has(&DataKey::Quest(quest_id)) {
+        if let Some(quest) = env
+            .storage()
+            .persistent()
+            .get::<_, QuestInfo>(&DataKey::Quest(quest_id))
+        {
             common::extend_persistent_ttl(env, &DataKey::Quest(quest_id));
+            if quest.visibility == Visibility::Public
+                && quest.status != QuestStatus::Cancelled
+            {
+                Self::add_id_to_index(
+                    env,
+                    DataKey::PublicCategoryQuests(quest.category.clone()),
+                    quest_id,
+                );
+            }
         }
         if env
             .storage()

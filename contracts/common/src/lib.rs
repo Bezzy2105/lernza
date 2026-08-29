@@ -6,6 +6,8 @@ use soroban_sdk::{contracttype, Address, Env, String, Vec};
 /// preventing accidental misuse with invalid types at compile time.
 pub trait IsDataKey: soroban_sdk::IntoVal<Env, soroban_sdk::Val> {}
 
+impl IsDataKey for String {}
+
 /// Target TTL for persistent and instance storage entries: 518_400 ledgers.
 /// At ~5 seconds per ledger this is roughly 30 days. Every write or meaningful
 /// update to a long-lived entry should extend its TTL to this value so that
