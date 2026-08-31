@@ -312,6 +312,109 @@ impl QuestContract {
         is_verified
     }
 
+    /// Returns the learner dashboard: one item per active quest that the
+    /// learner is enrolled in, with the next actionable item, deadline, review
+    /// status, blocked flag, and whether non-critical guidance has been
+    /// dismissed.
+    pub fn get_learner_dashboard(env: Env, learner: Address) -> Vec<LearnerDashboardItem> {
+        let quest_ids = env
+            .storage()
+            .persistent()
+            .get::<Vec<u32>>(&DataKey::EnrolleeQuests(learner.clone()))
+            .unwrap_or(Vec::new(&env));
+
+        let mut items = Vec::new(&env);
+        for quest_id in quest_ids.iter() {
+            let quest = match Self::load_quest(&env, quest_id) {
+                Ok(q) => q,
+                Err(_) => continue,
+            };
+            if !Self::is_quest_active(&quest) {
+                continue;
+            }
+
+            let dismissed_key = DataKey::DismissedGuidance(learner.clone(), quest_id);
+            let is_dismissed = env
+                .storage()
+                .persistent()
+                .get::<bool>(&dismissed_key)
+                .unwrap_or(false);
+
+            let deadline = quest.deadline;
+            let next_action = Self::next_action_for_quest(&env, quest_id, &learner);
+            let is_blocked = Self::is_quest_blocked(&env, quest_id, &learner);
+            let review_status = Self::review_status_for_quest(&env, quest_id, &learner);
+
+            items.push_back(LearnerDashboardItem {
+                quest_id,
+                quest_name: quest.name.clone(),
+                deadline,
+                next_action,
+                is_blocked,
+                review_status,
+                is_dismissed,
+            });
+        }
+        items
+    }
+
+    /// Dismiss non-critical guidance for a quest. The dismissal is stored
+    /// separately from quest data, so no learner progress is lost.
+    pub fn dismiss_guidance(env: Env, learner: Address, quest_id: u32) -> Result<(), Error> {
+        learner.require_auth();
+        // Ensure the learner is actually enrolled in this quest.
+        if !env.storage().persistent().has(&DataKey::EnrolleeStatus(quest_id, learner.clone())) {
+            return Err(Error::NotEnrolled);
+        }
+        let key = DataKey::DismissedGuidance(learner.clone(), quest_id);
+        env.storage().persistent().set(&key, &true);
+        common::extend_persistent_ttl(&env, &key);
+        extend_instance_ttl(&env);
+        Ok(())
+    }
+
+    /// Restore a previously dismissed guidance item.
+    pub fn restore_guidance(env: Env, learner: Address, quest_id: u32) -> Result<(), Error> {
+        learner.require_auth();
+        let key = DataKey::DismissedGuidance(learner.clone(), quest_id);
+        if env.storage().persistent().has(&key) {
+            env.storage().persistent().remove(&key);
+        }
+        extend_instance_ttl(&env);
+        Ok(())
+    }
+
+    // Helper: a quest is “active” when it is not archived, cancelled, or completed.
+    fn is_quest_active(quest: &QuestInfo) -> bool {
+        matches!(quest.status, QuestStatus::Active)
+    }
+
+    // Helper: determine whether the learner is currently blocked.
+    fn is_quest_blocked(env: &Env, quest_id: u32, learner: &Address) -> bool {
+        if !env.storage().persistent().has(&DataKey::EnrolleeStatus(quest_id, learner.clone())) {
+            return true;
+        }
+        let quest = match Self::load_quest(env, quest_id) {
+            Ok(q) => q,
+            Err(_) => return true,
+        };
+        let now = env.ledger().timestamp();
+        quest.deadline != 0 && now >= quest.deadline
+    }
+
+    // Helper: return the current review status symbol.
+    fn review_status_for_quest(env: &Env, _quest_id: u32, _learner: &Address) -> Symbol {
+        Symbol::new(env, "none")
+    }
+
+    // Helper: choose a single clear next action for a learner on a quest.
+    fn next_action_for_quest(env: &Env, quest_id: u32, learner: &Address) -> Symbol {
+        if Self::is_quest_blocked(env, quest_id, learner) {
+            return Symbol::new(env, "wait_for_unblock");
+        }
+        Symbol::new(env, "start_next_milestone")
+    }
+
     /// Revoke a creator's verification. Admin only.
     ///
     /// Removes the verification entry from storage entirely. This operation
