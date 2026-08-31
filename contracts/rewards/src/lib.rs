@@ -52,6 +52,8 @@ pub enum DataKey {
     QuestPoolPerToken(u32, Address), // (quest_id, token_addr)
     // Per-user total earnings
     UserEarnings(Address),
+    // Per-user list of dismissed dashboard guidance items
+    DismissedGuidance(Address),
     // Global stats
     TotalDistributed,
     // Total tokens ever funded — Issue #717
@@ -80,6 +82,35 @@ pub enum DataKey {
     // (fail-open) so existing single/multi-token flows keep working until an
     // admin explicitly configures the platform's supported tokens.
     SupportedTokensEnabled,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct NextAction {
+    pub action_type: Symbol,
+    pub label: String,
+    pub quest_id: u32,
+    pub milestone_id: u32,
+    pub blocked: bool,
+    pub deadline: u64,
+    pub pending_review: bool,
+    pub changes_requested: bool,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct LearnerQuestView {
+    pub quest_id: u32,
+    pub status: QuestStatus,
+    pub deadline: u64,
+    pub next_action: NextAction,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct LearnerDashboard {
+    pub quests: Vec<LearnerQuestView>,
+    pub total_earned: i128,
 }
 
 #[contracterror]
@@ -176,6 +207,153 @@ impl RewardsContract {
             .instance()
             .get(&DataKey::Admin)
             .ok_or(Error::NotInitialized)
+    }
+
+    /// Returns the learner dashboard for a user. The caller passes the list
+    /// of quest IDs the learner is enrolled in; the rewards contract does not
+    /// maintain an enrollment registry, so it reads quest/enrollee status
+    /// through the same cross-contract clients used during payout.
+    pub fn get_learner_dashboard(
+        env: Env,
+        user: Address,
+        quest_ids: Vec<u32>,
+    ) -> LearnerDashboard {
+        let dismissed = Self::get_dismissed_guidance(env.clone(), user.clone());
+        let total_earned = Self::get_user_earnings(env.clone(), user.clone());
+
+        let quest_contract_addr = match env
+            .storage()
+            .instance()
+            .get::<DataKey, Address>(&DataKey::QuestContractAddr)
+        {
+            Some(addr) => addr,
+            None => {
+                return LearnerDashboard {
+                    quests: Vec::new(&env),
+                    total_earned,
+                }
+            }
+        };
+        let quest_client = QuestClient::new(&env, &quest_contract_addr);
+
+        let mut quests = Vec::new(&env);
+        for i in 0..quest_ids.len() {
+            let quest_id = quest_ids.get(i).unwrap();
+            let quest_info = match quest_client.try_get_quest(&quest_id) {
+                Ok(Ok(q)) => q,
+                _ => continue,
+            };
+
+            let active_quest = quest_info.status != QuestStatus::Archived
+                && quest_info.status != QuestStatus::Cancelled;
+
+            let is_active_enrollee = quest_client
+                .try_get_enrollee_status(&quest_id, &user)
+                .unwrap_or(Ok(EnrolleeStatus::Inactive))
+                .unwrap_or(EnrolleeStatus::Inactive)
+                == EnrolleeStatus::Active;
+
+            let now = env.ledger().timestamp();
+            let deadline_passed = quest_info.deadline != 0 && now >= quest_info.deadline;
+
+            let mut blocked = !active_quest || !is_active_enrollee || deadline_passed;
+            let mut action_type = Symbol::new(&env, "available_milestone");
+            let mut label = String::from_str(&env, "Work on the next available milestone");
+            let mut pending_review = false;
+            let mut changes_requested = false;
+            let mut milestone_id = 0;
+
+            if !active_quest {
+                blocked = true;
+                action_type = Symbol::new(&env, "blocked");
+                label = String::from_str(&env, "Quest is no longer accepting work");
+            } else if !is_active_enrollee {
+                blocked = true;
+                action_type = Symbol::new(&env, "blocked");
+                label = String::from_str(&env, "Enrollment is inactive");
+            } else if deadline_passed {
+                blocked = false;
+                action_type = Symbol::new(&env, "upcoming_deadline");
+                label = String::from_str(&env, "Deadline reached - submit work for review");
+                pending_review = true;
+            }
+
+            let next_action = NextAction {
+                quest_id,
+                milestone_id,
+                action_type,
+                label,
+                blocked,
+                deadline: quest_info.deadline,
+                pending_review,
+                changes_requested,
+            };
+
+            let view_next_action = if dismissed.contains(&(quest_id, milestone_id)) {
+                NextAction {
+                    action_type: Symbol::new(&env, "dismissed"),
+                    label: String::from_str(&env, "Guidance dismissed"),
+                    blocked: false,
+                    ..next_action
+                }
+            } else {
+                next_action
+            };
+
+            quests.push_back(LearnerQuestView {
+                quest_id,
+                status: quest_info.status,
+                deadline: quest_info.deadline,
+                next_action: view_next_action,
+            });
+        }
+
+        LearnerDashboard {
+            quests,
+            total_earned,
+        }
+    }
+
+    /// Dismiss a non-critical guidance item for a user. The dismissal is stored
+    /// separately so no quest or milestone data is lost.
+    pub fn dismiss_guidance(
+        env: Env,
+        user: Address,
+        quest_id: u32,
+        milestone_id: u32,
+    ) -> Result<(), Error> {
+        user.require_auth();
+
+        if env
+            .storage()
+            .instance()
+            .get(&DataKey::Paused)
+            .unwrap_or(false)
+        {
+            return Err(Error::Paused);
+        }
+
+        let key = DataKey::DismissedGuidance(user.clone());
+        let mut dismissed: Vec<(u32, u32)> = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or(Vec::new(&env));
+        let item = (quest_id, milestone_id);
+        if !dismissed.contains(&item) {
+            dismissed.push_back(item);
+        }
+        env.storage().persistent().set(&key, &dismissed);
+        common::extend_persistent_ttl(&env, &key);
+        Ok(())
+    }
+
+    /// Return the list of dismissed guidance items for a user.
+    pub fn get_dismissed_guidance(env: Env, user: Address) -> Vec<(u32, u32)> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::DismissedGuidance(user))
+            .unwrap_or(Vec::new(&env))
     }
 
     /// Upgrade this contract's WASM. Only the stored administrator can invoke it.
