@@ -247,16 +247,15 @@ impl RewardsContract {
             let active_quest = quest_info.status != QuestStatus::Archived
                 && quest_info.status != QuestStatus::Cancelled;
 
-            let is_active_enrollee = quest_client
+            let enrollee_status = quest_client
                 .try_get_enrollee_status(&quest_id, &user)
                 .unwrap_or(Ok(EnrolleeStatus::Inactive))
-                .unwrap_or(EnrolleeStatus::Inactive)
-                == EnrolleeStatus::Active;
+                .unwrap_or(EnrolleeStatus::Inactive);
 
             let now = env.ledger().timestamp();
             let deadline_passed = quest_info.deadline != 0 && now >= quest_info.deadline;
 
-            let mut blocked = !active_quest || !is_active_enrollee || deadline_passed;
+            let mut blocked = !active_quest || enrollee_status == EnrolleeStatus::Inactive;
             let mut action_type = Symbol::new(&env, "available_milestone");
             let mut label = String::from_str(&env, "Work on the next available milestone");
             let mut pending_review = false;
@@ -267,15 +266,37 @@ impl RewardsContract {
                 blocked = true;
                 action_type = Symbol::new(&env, "blocked");
                 label = String::from_str(&env, "Quest is no longer accepting work");
-            } else if !is_active_enrollee {
-                blocked = true;
-                action_type = Symbol::new(&env, "blocked");
-                label = String::from_str(&env, "Enrollment is inactive");
-            } else if deadline_passed {
-                blocked = false;
-                action_type = Symbol::new(&env, "upcoming_deadline");
-                label = String::from_str(&env, "Deadline reached - submit work for review");
-                pending_review = true;
+            } else {
+                match enrollee_status {
+                    EnrolleeStatus::Active => {
+                        if deadline_passed {
+                            blocked = true;
+                            action_type = Symbol::new(&env, "deadline_reached");
+                            label = String::from_str(&env, "Deadline passed - no further work available");
+                        } else {
+                            blocked = false;
+                            action_type = Symbol::new(&env, "available_milestone");
+                            label = String::from_str(&env, "Work on the next available milestone");
+                        }
+                    }
+                    EnrolleeStatus::PendingReview => {
+                        blocked = true;
+                        pending_review = true;
+                        action_type = Symbol::new(&env, "pending_review");
+                        label = String::from_str(&env, "Milestone submitted - waiting for review");
+                    }
+                    EnrolleeStatus::ChangesRequested => {
+                        blocked = false;
+                        changes_requested = true;
+                        action_type = Symbol::new(&env, "changes_requested");
+                        label = String::from_str(&env, "Address requested changes on your milestone");
+                    }
+                    _ => {
+                        blocked = true;
+                        action_type = Symbol::new(&env, "blocked");
+                        label = String::from_str(&env, "Enrollment is inactive");
+                    }
+                }
             }
 
             let next_action = NextAction {
