@@ -10,7 +10,7 @@ on:
       - 'contracts/**'
       - 'scripts/generate-release-artifacts.sh'
       - 'releases/**'
-      - '.github/workflows/release-artifacts-check.yml resents-artifacts-check.yml' 
+      - '.github/workflows/release-artifacts-check.yml'
 
 permissions:
   contents: read
