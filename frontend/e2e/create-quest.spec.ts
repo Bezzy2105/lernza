@@ -1,10 +1,10 @@
 import { test, expect } from "@playwright/test"
 import { mockWallet } from "./helpers/mock-wallet"
 
-test.describe("Create Quest wizard — wallet not connected", () => {
+test.describe("Create Quest wizard — wallet not connected", () {
   test.beforeEach(async ({ page }) => {
     await page.goto("/quest/create")
-    await page.waitForLoadState("networkidle")
+    await expect(page.locator("main")).toBeVisible()
   })
 
   test("renders the create quest page", async ({ page }) => {
@@ -30,13 +30,12 @@ test.describe("Create Quest wizard — wallet not connected", () => {
   })
 })
 
-test.describe("Create Quest wizard — with mocked wallet", () => {
+test.describe("Create Quest wizard — with mocked wallet", () {
   test.beforeEach(async ({ page }) => {
     await mockWallet(page)
     await page.goto("/quest/create")
-    await page.waitForLoadState("networkidle")
-    // Give the wallet hook time to run its boot effect
-    await page.waitForTimeout(1000)
+    // Wait for the wallet boot effect to complete by checking for either the form or the connect prompt.
+    await expect(page.getByText(/step 1/i).or(page.getByText(/connect your wallet/i))).toBeVisible()
   })
 
   test("renders main content after wallet mock boots", async ({ page }) => {
@@ -44,13 +43,7 @@ test.describe("Create Quest wizard — with mocked wallet", () => {
   })
 
   test("shows the quest form or wallet connect prompt", async ({ page }) => {
-    // Either the form loaded (wallet mock worked) or the connect prompt is shown
-    const formVisible = await page.getByText(/step 1/i).isVisible().catch(() => false)
-    const promptVisible = await page
-      .getByText(/connect your wallet/i)
-      .isVisible()
-      .catch(() => false)
-    expect(formVisible || promptVisible).toBe(true)
+    await expect(page.getByText(/step 1/i).or(page.getByText(/connect your wallet/i))).toBeVisible()
   })
 
   test("step 1 form shows quest name field when connected", async ({ page }) => {
@@ -74,4 +67,4 @@ test.describe("Create Quest wizard — with mocked wallet", () => {
     const errors = page.locator("[role='alert'], .text-destructive, .text-red-500")
     await expect(errors.first()).toBeVisible()
   })
-})
+}
