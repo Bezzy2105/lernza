@@ -35,7 +35,7 @@ test.describe("Create Quest wizard — with mocked wallet", () => {
     await mockWallet(page)
     await page.goto("/quest/create")
     // Wait for the wallet boot effect to complete by checking for either the form or the connect prompt.
-    await expect(page.getByText(/step 1/i).Or(page.getByText(/connect your wallet/i))).toBeVisible()
+    await expect(page.getByText(/step 1/i).or(page.getByText(/connect your wallet/i))).toBeVisible()
   })
 
   test("renders main content after wallet mock boots", async ({ page }) => {
@@ -43,7 +43,7 @@ test.describe("Create Quest wizard — with mocked wallet", () => {
   })
 
   test("shows the quest form or wallet connect prompt", async ({ page }) => {
-    await expect(page.getByText(/step 1/i).Or(page.getByText(/connect your wallet/i))).toBeVisible()
+    await expect(page.getByText(/step 1/i).or(page.getByText(/connect your wallet/i))).toBeVisible()
   })
 
   test("step 1 form shows quest name field when connected", async ({ page }) => {
