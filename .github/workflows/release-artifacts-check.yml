@@ -10,7 +10,7 @@ on:
       - 'contracts/**'
       - 'scripts/generate-release-artifacts.sh'
       - 'releases/**'
-      - '.github/workflows/release-artifacts-check.yml'
+      - '.github/workflows/release-artifacts-check.yml resents-artifacts-check.yml' 
 
 permissions:
   contents: read
@@ -21,17 +21,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Rust Toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          toolchain: stable
+          toolchain: 1.83.0
           target: wasm32-unknown-unknown
 
       - name: Build Contract Release WASM Binaries
         run: |
-          cargo build --target wasm32-unknown-unknown --release
+          cargo build --target wasm32-unknown-unknown --release --locked
 
       - name: Generate Release Artifacts
         run: |
