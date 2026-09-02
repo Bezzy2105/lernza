@@ -55,6 +55,8 @@ pub enum DataKey {
     EnrolleeStatus(u32, Address),
     /// Pending ownership transfer request. Key: quest_id. Value: PendingTransfer.
     PendingTransfer(u32),
+    /// Incident-handling metadata for a temporarily suspended quest.
+    Suspension(u32),
     /// Waitlist for a quest when enrollment is full. Key: quest_id. Value: Vec<Address> (FIFO).
     Waitlist(u32),
     /// Learner-dismissed dashboard guidance. Key: (learner, quest_id).
@@ -95,6 +97,9 @@ pub enum Error {
     InviteAlreadyUsed = 16,
     /// Quest has been cancelled.
     QuestCancelled = 17,
+    /// Removal is blocked while a submission is awaiting review or settlement.
+    RemovalBlockedByPendingApproval = 22,
+    QuestSuspended = 21,
     /// No pending ownership transfer exists for this quest.
     NoPendingTransfer = 18,
     /// The caller is not the nominated new owner for this transfer.
@@ -149,6 +154,14 @@ pub struct LearnerDashboardItem {
     pub is_blocked: bool,
     pub review_status: Symbol,
     pub is_dismissed: bool,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct SuspensionInfo {
+    pub reason: String,
+    pub suspended_by: Address,
+    pub suspended_at: u64,
 }
 
 fn is_blank_ascii(s: &String) -> bool {
@@ -310,109 +323,6 @@ impl QuestContract {
             common::extend_persistent_ttl(&env, &key);
         }
         is_verified
-    }
-
-    /// Returns the learner dashboard: one item per active quest that the
-    /// learner is enrolled in, with the next actionable item, deadline, review
-    /// status, blocked flag, and whether non-critical guidance has been
-    /// dismissed.
-    pub fn get_learner_dashboard(env: Env, learner: Address) -> Vec<LearnerDashboardItem> {
-        let quest_ids = env
-            .storage()
-            .persistent()
-            .get::<Vec<u32>>(&DataKey::EnrolleeQuests(learner.clone()))
-            .unwrap_or(Vec::new(&env));
-
-        let mut items = Vec::new(&env);
-        for quest_id in quest_ids.iter() {
-            let quest = match Self::load_quest(&env, quest_id) {
-                Ok(q) => q,
-                Err(_) => continue,
-            };
-            if !Self::is_quest_active(&quest) {
-                continue;
-            }
-
-            let dismissed_key = DataKey::DismissedGuidance(learner.clone(), quest_id);
-            let is_dismissed = env
-                .storage()
-                .persistent()
-                .get::<bool>(&dismissed_key)
-                .unwrap_or(false);
-
-            let deadline = quest.deadline;
-            let next_action = Self::next_action_for_quest(&env, quest_id, &learner);
-            let is_blocked = Self::is_quest_blocked(&env, quest_id, &learner);
-            let review_status = Self::review_status_for_quest(&env, quest_id, &learner);
-
-            items.push_back(LearnerDashboardItem {
-                quest_id,
-                quest_name: quest.name.clone(),
-                deadline,
-                next_action,
-                is_blocked,
-                review_status,
-                is_dismissed,
-            });
-        }
-        items
-    }
-
-    /// Dismiss non-critical guidance for a quest. The dismissal is stored
-    /// separately from quest data, so no learner progress is lost.
-    pub fn dismiss_guidance(env: Env, learner: Address, quest_id: u32) -> Result<(), Error> {
-        learner.require_auth();
-        // Ensure the learner is actually enrolled in this quest.
-        if !env.storage().persistent().has(&DataKey::EnrolleeStatus(quest_id, learner.clone())) {
-            return Err(Error::NotEnrolled);
-        }
-        let key = DataKey::DismissedGuidance(learner.clone(), quest_id);
-        env.storage().persistent().set(&key, &true);
-        common::extend_persistent_ttl(&env, &key);
-        extend_instance_ttl(&env);
-        Ok(())
-    }
-
-    /// Restore a previously dismissed guidance item.
-    pub fn restore_guidance(env: Env, learner: Address, quest_id: u32) -> Result<(), Error> {
-        learner.require_auth();
-        let key = DataKey::DismissedGuidance(learner.clone(), quest_id);
-        if env.storage().persistent().has(&key) {
-            env.storage().persistent().remove(&key);
-        }
-        extend_instance_ttl(&env);
-        Ok(())
-    }
-
-    // Helper: a quest is “active” when it is not archived, cancelled, or completed.
-    fn is_quest_active(quest: &QuestInfo) -> bool {
-        matches!(quest.status, QuestStatus::Active)
-    }
-
-    // Helper: determine whether the learner is currently blocked.
-    fn is_quest_blocked(env: &Env, quest_id: u32, learner: &Address) -> bool {
-        if !env.storage().persistent().has(&DataKey::EnrolleeStatus(quest_id, learner.clone())) {
-            return true;
-        }
-        let quest = match Self::load_quest(env, quest_id) {
-            Ok(q) => q,
-            Err(_) => return true,
-        };
-        let now = env.ledger().timestamp();
-        quest.deadline != 0 && now >= quest.deadline
-    }
-
-    // Helper: return the current review status symbol.
-    fn review_status_for_quest(env: &Env, _quest_id: u32, _learner: &Address) -> Symbol {
-        Symbol::new(env, "none")
-    }
-
-    // Helper: choose a single clear next action for a learner on a quest.
-    fn next_action_for_quest(env: &Env, quest_id: u32, learner: &Address) -> Symbol {
-        if Self::is_quest_blocked(env, quest_id, learner) {
-            return Symbol::new(env, "wait_for_unblock");
-        }
-        Symbol::new(env, "start_next_milestone")
     }
 
     /// Revoke a creator's verification. Admin only.
@@ -619,6 +529,9 @@ impl QuestContract {
         if quest.status == QuestStatus::Cancelled {
             return Err(Error::QuestCancelled);
         }
+        if quest.status == QuestStatus::Suspended {
+            return Err(Error::QuestSuspended);
+        }
 
         // Input validation & update
         if let Some(n) = name.clone() {
@@ -795,6 +708,82 @@ impl QuestContract {
         Ok(())
     }
 
+    /// Temporarily suspend a quest during incident handling. The owner or
+    /// contract administrator may suspend an active quest. Mutating quest,
+    /// milestone, and reward actions are blocked while read-only queries stay
+    /// available for investigation.
+    pub fn suspend_quest(
+        env: Env,
+        quest_id: u32,
+        actor: Address,
+        reason: String,
+    ) -> Result<(), Error> {
+        Self::require_not_paused(&env)?;
+        let mut quest = Self::load_quest(&env, quest_id)?;
+        Self::require_quest_operator(&env, &quest, &actor)?;
+        if reason.len() == 0 || reason.len() > MAX_QUEST_DESCRIPTION_LEN {
+            return Err(Error::InvalidInput);
+        }
+        if quest.status != QuestStatus::Active {
+            return Err(if quest.status == QuestStatus::Suspended {
+                Error::QuestSuspended
+            } else {
+                Error::EnrollmentClosed
+            });
+        }
+
+        actor.require_auth();
+        quest.status = QuestStatus::Suspended;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Quest(quest_id), &quest);
+        let info = SuspensionInfo {
+            reason: reason.clone(),
+            suspended_by: actor.clone(),
+            suspended_at: env.ledger().timestamp(),
+        };
+        let key = DataKey::Suspension(quest_id);
+        env.storage().persistent().set(&key, &info);
+        common::extend_persistent_ttl(&env, &key);
+        env.events().publish(
+            (Symbol::new(&env, "quest_suspended"),),
+            (quest_id, actor, reason, info.suspended_at),
+        );
+        Self::bump(&env, quest_id);
+        Ok(())
+    }
+
+    /// Resume a suspended quest. Only the owner or contract administrator may resume it.
+    pub fn resume_quest(env: Env, quest_id: u32, actor: Address) -> Result<(), Error> {
+        Self::require_not_paused(&env)?;
+        let mut quest = Self::load_quest(&env, quest_id)?;
+        Self::require_quest_operator(&env, &quest, &actor)?;
+        if quest.status != QuestStatus::Suspended {
+            return Err(Error::InvalidInput);
+        }
+
+        actor.require_auth();
+        quest.status = QuestStatus::Active;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Quest(quest_id), &quest);
+        env.events().publish(
+            (Symbol::new(&env, "quest_resumed"),),
+            (quest_id, actor, env.ledger().timestamp()),
+        );
+        Self::bump(&env, quest_id);
+        Ok(())
+    }
+
+    /// Return the suspension notice for a quest, if one exists.
+    pub fn get_suspension(env: Env, quest_id: u32) -> Result<Option<SuspensionInfo>, Error> {
+        Self::load_quest(&env, quest_id)?;
+        Ok(env
+            .storage()
+            .persistent()
+            .get(&DataKey::Suspension(quest_id)))
+    }
+
     /// Add an enrollee to a quest. Owner only.
     ///
     /// When the quest has an enrollment cap and is full, the owner can still
@@ -807,6 +796,9 @@ impl QuestContract {
 
         if quest.status == QuestStatus::Archived || quest.status == QuestStatus::Cancelled {
             return Err(Error::EnrollmentClosed);
+        }
+        if quest.status == QuestStatus::Suspended {
+            return Err(Error::QuestSuspended);
         }
         if quest.deadline > 0 && env.ledger().timestamp() > quest.deadline {
             return Err(Error::DeadlineExpired);
@@ -860,6 +852,9 @@ impl QuestContract {
         let quest = Self::load_quest(&env, quest_id)?;
         if quest.status == QuestStatus::Archived || quest.status == QuestStatus::Cancelled {
             return Err(Error::EnrollmentClosed);
+        }
+        if quest.status == QuestStatus::Suspended {
+            return Err(Error::QuestSuspended);
         }
         if quest.deadline > 0 && env.ledger().timestamp() > quest.deadline {
             return Err(Error::DeadlineExpired);
@@ -1100,6 +1095,20 @@ impl QuestContract {
         Self::require_not_paused(&env)?;
         let quest = Self::load_quest(&env, quest_id)?;
         quest.owner.require_auth();
+        if quest.status != QuestStatus::Active {
+            return Err(Error::EnrollmentClosed);
+        }
+
+        // A hold is placed by the quest owner while a submission is in flight
+        // or a verified reward is awaiting settlement. Removing the enrollee
+        // through this path must not bypass that protection.
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::LeaveHold(quest_id, enrollee.clone()))
+        {
+            return Err(Error::RemovalBlockedByPendingApproval);
+        }
 
         Self::internal_remove_enrollee(&env, quest_id, enrollee.clone())?;
 
@@ -1124,14 +1133,23 @@ impl QuestContract {
     pub fn leave_quest(env: Env, enrollee: Address, quest_id: u32) -> Result<(), Error> {
         enrollee.require_auth();
         Self::require_not_paused(&env)?;
-        Self::load_quest(&env, quest_id)?;
+        let quest = Self::load_quest(&env, quest_id)?;
+        if quest.status != QuestStatus::Active {
+            return Err(Error::EnrollmentClosed);
+        }
 
         let hold_key = DataKey::LeaveHold(quest_id, enrollee.clone());
         if env.storage().persistent().has(&hold_key) {
             return Err(Error::LeaveBlockedByPendingApproval);
         }
 
-        Self::internal_remove_enrollee(&env, quest_id, enrollee)
+        Self::internal_remove_enrollee(&env, quest_id, enrollee.clone())?;
+        env.events().publish(
+            (Symbol::new(&env, "enrollee_removed"),),
+            (quest_id, enrollee),
+        );
+        Self::bump(&env, quest_id);
+        Ok(())
     }
 
     /// Place a peer-review hold on an enrollee. Owner only.
@@ -2020,6 +2038,14 @@ impl QuestContract {
         Ok(())
     }
 
+    fn require_quest_operator(env: &Env, quest: &QuestInfo, actor: &Address) -> Result<(), Error> {
+        let admin: Option<Address> = env.storage().instance().get(&DataKey::Admin);
+        if quest.owner != *actor && admin.as_ref() != Some(actor) {
+            return Err(Error::Unauthorized);
+        }
+        Ok(())
+    }
+
     fn require_not_paused(env: &Env) -> Result<(), Error> {
         if common::is_paused_by_key(env, &DataKey::Paused) {
             Err(Error::Paused)
@@ -2104,7 +2130,16 @@ impl QuestContract {
         env.storage()
             .persistent()
             .set(&DataKey::Enrollees(quest_id), &new_list);
-        Self::remove_id_from_index(env, DataKey::EnrolleeQuests(enrollee), quest_id);
+        Self::remove_id_from_index(env, DataKey::EnrolleeQuests(enrollee.clone()), quest_id);
+        // Status and holds are scoped to enrollment and must not leak into a
+        // future re-enrollment. Verified milestone records live in the
+        // milestone contract and are intentionally untouched here.
+        env.storage()
+            .persistent()
+            .remove(&DataKey::EnrolleeStatus(quest_id, enrollee.clone()));
+        env.storage()
+            .persistent()
+            .remove(&DataKey::LeaveHold(quest_id, enrollee));
 
         // Auto-promote from waitlist if the quest has a cap and there are waitlisted people.
         let quest = Self::load_quest(env, quest_id)?;

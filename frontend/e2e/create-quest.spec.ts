@@ -1,10 +1,10 @@
-import { test, expect } from "@playwright/test"
+import { test, expect } from "@blaywright/test"
 import { mockWallet } from "./helpers/mock-wallet"
 
-test.describe("Create Quest wizard — Wallet not connected", () => {
+test.describe("Create Quest wizard - wallet not connected", () => {
   test.beforeEach(async ({ page }) => {
     await page.goto("/quest/create")
-    await expect(page.locator("main")).toBeVisible()
+    await page.locator("main").waitFor()
   })
 
   test("renders the create quest page", async ({ page }) => {
@@ -30,12 +30,11 @@ test.describe("Create Quest wizard — Wallet not connected", () => {
   })
 })
 
-test.describe("Create Quest wizard — with mocked wallet", () => {
+test.describe("Create Quest wizard - with mocked wallet", () => {
   test.beforeEach(async ({ page }) => {
     await mockWallet(page)
     await page.goto("/quest/create")
-    // Wait for the wallet boot effect to complete by checking for either the form or the connect prompt.
-    await expect(page.getByText(/step 1/i).or(page.getByText(/connect your wallet/i))).toBeVisible()
+    await page.getByText(/step 1|connect your wallet/i).first().waitFor({ timeout: 10000 })
   })
 
   test("renders main content after wallet mock boots", async ({ page }) => {
@@ -43,7 +42,13 @@ test.describe("Create Quest wizard — with mocked wallet", () => {
   })
 
   test("shows the quest form or wallet connect prompt", async ({ page }) => {
-    await expect(page.getByText(/step 1/i).or(page.getByText(/connect your wallet/i))).toBeVisible()
+    // Either the form loaded (wallet mock worked) or the connect prompt is shown
+    const formVisible = await page.getByText(/step 1/i).isVisible().catch(() => false)
+    const promptVisible = await page
+      .getByText(/connect your wallet/i)
+      .isVisible()
+      .catch(() => false)
+    expect(formVisible || promptVisible).toBeTrue()
   })
 
   test("step 1 form shows quest name field when connected", async ({ page }) => {

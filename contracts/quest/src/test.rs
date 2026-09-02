@@ -2682,3 +2682,96 @@ fn test_owner_force_add_bypasses_cap() {
     assert!(enrollees.contains(&e1));
     assert!(enrollees.contains(&e2));
 }
+
+
+#[test]
+fn test_removal_before_completion_is_authorized_and_cleans_enrollment() {
+    let (env, client, owner, token) = setup();
+    let quest_id = create_quest_helper(&env, &client, &owner, &token);
+    let learner = Address::generate(&env);
+
+    client.add_enrollee(&quest_id, &learner);
+    client.remove_enrollee(&quest_id, &learner);
+
+    assert!(!client.is_enrollee(&quest_id, &learner));
+
+    // Re-enrollment starts clean and is not blocked by stale removal state.
+    client.add_enrollee(&quest_id, &learner);
+    assert_eq!(client.get_enrollee_status(&quest_id, &learner), EnrolleeStatus::Active);
+}
+
+#[test]
+fn test_removal_is_blocked_while_review_hold_is_present() {
+    let (env, client, owner, token) = setup();
+    let quest_id = create_quest_helper(&env, &client, &owner, &token);
+    let learner = Address::generate(&env);
+
+    client.add_enrollee(&quest_id, &learner);
+    client.place_leave_hold(&quest_id, &owner, &learner);
+
+    assert_eq!(
+        client.try_remove_enrollee(&quest_id, &learner),
+        Err(Ok(Error::RemovalBlockedByPendingApproval))
+    );
+    assert_eq!(
+        client.try_leave_quest(&learner, &quest_id),
+        Err(Ok(Error::LeaveBlockedByPendingApproval))
+    );
+
+    client.lift_leave_hold(&quest_id, &owner, &learner);
+    client.remove_enrollee(&quest_id, &learner);
+    assert!(!client.is_enrollee(&quest_id, &learner));
+}
+
+#[test]
+fn test_removal_after_completion_state_does_not_retain_enrollment_state() {
+    let (env, client, owner, token) = setup();
+    let quest_id = create_quest_helper(&env, &client, &owner, &token);
+    let learner = Address::generate(&env);
+
+    client.add_enrollee(&quest_id, &learner);
+    client.set_enrollee_status(&quest_id, &learner, &EnrolleeStatus::Inactive);
+    client.remove_enrollee(&quest_id, &learner);
+
+    assert!(!client.is_enrollee(&quest_id, &learner));
+
+    // Re-enrollment resets the prior inactive status to the default active state.
+    client.add_enrollee(&quest_id, &learner);
+    assert_eq!(client.get_enrollee_status(&quest_id, &learner), EnrolleeStatus::Active);
+}
+
+#[test]
+fn test_owner_can_suspend_and_resume_with_notice() {
+    let (env, client, owner, token) = setup();
+    let quest_id = create_quest_helper(&env, &client, &owner, &token);
+    let reason = String::from_str(&env, "security investigation");
+
+    client.suspend_quest(&quest_id, &owner, &reason);
+    let suspended = client.get_quest(&quest_id);
+    assert_eq!(suspended.status, QuestStatus::Suspended);
+    assert_eq!(
+        client.get_suspension(&quest_id).unwrap().reason,
+        reason
+    );
+
+    client.resume_quest(&quest_id, &owner);
+    assert_eq!(client.get_quest(&quest_id).status, QuestStatus::Active);
+}
+
+#[test]
+fn test_suspended_quest_rejects_enrollment_and_unauthorized_operator() {
+    let (env, client, owner, token) = setup();
+    let quest_id = create_quest_helper(&env, &client, &owner, &token);
+    let stranger = Address::generate(&env);
+    let reason = String::from_str(&env, "incident");
+
+    assert_eq!(
+        client.try_suspend_quest(&quest_id, &stranger, &reason),
+        Err(Ok(Error::Unauthorized))
+    );
+    client.suspend_quest(&quest_id, &owner, &reason);
+    assert_eq!(
+        client.try_join_quest(&stranger, &quest_id),
+        Err(Ok(Error::QuestSuspended))
+    );
+}
