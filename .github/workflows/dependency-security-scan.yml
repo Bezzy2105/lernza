@@ -23,7 +23,7 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: $+{{ github.workflow }}-$+{{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -41,7 +41,7 @@ jobs:
 
       - name: Install cargo-audit and cargo-deny
         run: |
-          cargo install cargo-audit cargo-deny --locked
+          cargo install cargo-audit cargo-deny
 
       - name: Validate Cargo.lock Integrity
         run: |
